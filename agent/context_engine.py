@@ -126,6 +126,13 @@ class SessionContextStore:
         self._check()
         return self._db.get_compaction_receipt(self._session_id, transaction_id)
 
+    def receipts(self, *, limit: int = 25) -> List[Dict[str, Any]]:
+        """Return the bound session's newest durable receipts in stable order."""
+        self._check()
+        return self._db.list_compaction_receipts(
+            self._session_id, limit=min(max(1, int(limit)), self._max_results)
+        )
+
     def deletion_tombstones(self, *, limit: int = 25) -> List[Dict[str, Any]]:
         self._check()
         return self._db.get_session_deletion_tombstones(limit=min(int(limit), self._max_results))

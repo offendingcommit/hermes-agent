@@ -28,7 +28,10 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from agent.context_compressor import ContextCompressor
+from agent.agent_init import _bind_context_engine_session
 from hermes_state import SessionDB
 from run_agent import AIAgent
 
@@ -42,6 +45,43 @@ def _bare_agent() -> AIAgent:
     return agent
 
 
+def test_bind_failure_is_an_explicit_activation_error():
+    engine = MagicMock()
+    engine.name = "broken"
+    engine.bind_session_state.side_effect = OSError("derived DB unavailable")
+
+    with pytest.raises(RuntimeError, match="broken.*failed to bind") as error:
+        _bind_context_engine_session(engine, MagicMock(), "session")
+
+    assert isinstance(error.value.__cause__, OSError)
+
+
+def test_transition_runs_full_lifecycle_in_order():
+    """End → reset → start → carry_over, in that order, when all inputs apply."""
+    events: list[str] = []
+    engine = MagicMock()
+    engine.context_length = 200_000
+    engine.on_session_end.side_effect = lambda *a, **kw: events.append("on_session_end")
+    engine.on_session_reset.side_effect = lambda *a, **kw: events.append("on_session_reset")
+    engine.on_session_start.side_effect = lambda *a, **kw: events.append("on_session_start")
+    engine.carry_over_new_session_context.side_effect = lambda *a, **kw: events.append("carry_over")
+
+    agent = _bare_agent()
+    agent.context_compressor = engine
+
+    agent._transition_context_engine_session(
+        old_session_id="old-sid",
+        new_session_id="new-sid",
+        previous_messages=[{"role": "user", "content": "hi"}],
+        carry_over_context=True,
+    )
+
+    assert events == [
+        "on_session_end",
+        "on_session_reset",
+        "on_session_start",
+        "carry_over",
+    ]
 
 
 
@@ -189,5 +229,4 @@ def test_engine_collector_forwards_register_command_to_plugin_manager():
     finally:
         # Clean up so we don't leak the registration across tests.
         manager._plugin_commands.pop("my-lcm-test-cmd", None)
-
 

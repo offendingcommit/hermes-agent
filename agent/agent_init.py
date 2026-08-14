@@ -2625,18 +2625,9 @@ def init_agent(
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
-        try:
-            import inspect as _inspect
-            _bind_kwargs = {"session_db": session_db, "session_id": agent.session_id}
-            _bind_params = _inspect.signature(_bind_session_state).parameters
-            _bind_session_state(**{
-                key: value for key, value in _bind_kwargs.items()
-                if key in _bind_params or any(
-                    p.kind == _inspect.Parameter.VAR_KEYWORD for p in _bind_params.values()
-                )
-            })
-        except Exception:
-            pass
+        _bind_context_engine_session(
+            agent.context_compressor, session_db, agent.session_id
+        )
     agent.compression_enabled = compression_enabled
     agent.compression_in_place = compression_in_place
     # Apply micro-compaction settings to the compressor (feature is opt-in)
@@ -2939,3 +2930,25 @@ def init_agent(
 
 
 __all__ = ["init_agent"]
+def _bind_context_engine_session(engine, session_db, session_id: str):
+    """Bind a selected engine or fail activation with an actionable error."""
+    import inspect
+
+    bind = getattr(engine, "bind_session_state", None)
+    if not callable(bind):
+        return None
+    kwargs = {"session_db": session_db, "session_id": session_id}
+    parameters = inspect.signature(bind).parameters
+    try:
+        return bind(**{
+            key: value for key, value in kwargs.items()
+            if key in parameters or any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+        })
+    except Exception as exc:
+        name = getattr(engine, "name", type(engine).__name__)
+        raise RuntimeError(
+            f"Context engine '{name}' failed to bind session state"
+        ) from exc

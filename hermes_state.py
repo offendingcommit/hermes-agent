@@ -8795,6 +8795,30 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         result["active_message_ids"] = json.loads(result["active_message_ids"])
         return result
 
+    def list_compaction_receipts(
+        self, session_id: str, *, limit: int = 25
+    ) -> List[Dict[str, Any]]:
+        """List one session's newest archival receipts, strictly bounded.
+
+        Ordering is deterministic newest-first, with transaction id breaking
+        equal-timestamp ties. No cross-session selector is exposed by the bound
+        engine capability.
+        """
+        bounded_limit = max(1, min(int(limit), 100))
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM context_compaction_receipts WHERE session_id = ? "
+                "ORDER BY created_at DESC, transaction_id DESC LIMIT ?",
+                (session_id, bounded_limit),
+            ).fetchall()
+        receipts = []
+        for row in rows:
+            receipt = dict(row)
+            receipt["archived_message_ids"] = json.loads(receipt["archived_message_ids"])
+            receipt["active_message_ids"] = json.loads(receipt["active_message_ids"])
+            receipts.append(receipt)
+        return receipts
+
     def search_session_messages(
         self, session_id: str, query: str, *, limit: int = 10
     ) -> List[Dict[str, Any]]:
