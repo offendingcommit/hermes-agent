@@ -32,6 +32,9 @@ import pytest
 
 from agent.context_compressor import ContextCompressor
 from agent.agent_init import _bind_context_engine_session
+from agent.context_engine import ContextSessionBlockedError
+from agent.context_engine import ContextEngine
+from agent.turn_context import ensure_context_session_executable
 from hermes_state import SessionDB
 from run_agent import AIAgent
 
@@ -54,6 +57,33 @@ def test_bind_failure_is_an_explicit_activation_error():
         _bind_context_engine_session(engine, MagicMock(), "session")
 
     assert isinstance(error.value.__cause__, OSError)
+
+
+def test_unspecced_session_db_mock_does_not_block_execution():
+    agent = MagicMock()
+    agent.session_id = "session"
+    agent._session_db = MagicMock()
+
+    ensure_context_session_executable(agent)
+
+
+def test_durable_string_reason_blocks_execution():
+    agent = MagicMock()
+    agent.session_id = "session"
+    agent._session_db.get_context_session_block.return_value = "invalid_lineage"
+
+    with pytest.raises(ContextSessionBlockedError, match="invalid_lineage"):
+        ensure_context_session_executable(agent)
+
+
+def test_base_compaction_eligibility_is_backward_compatible():
+    class ProbeEngine(ContextEngine):
+        name = "probe"
+        def update_from_response(self, usage): pass
+        def should_compress(self, prompt_tokens=None): return False
+        def compress(self, messages, **kwargs): return messages
+
+    assert ProbeEngine().is_compaction_eligible([], prompt_tokens=1)
 
 
 def test_transition_runs_full_lifecycle_in_order():
