@@ -56,8 +56,14 @@ def ensure_context_session_executable(agent) -> None:
     session_id = getattr(agent, "session_id", None)
     if db is None or not session_id:
         return
-    reason = db.get_context_session_block(session_id)
-    if reason:
+    getter = getattr(db, "get_context_session_block", None)
+    if not callable(getter):
+        return
+    reason = getter(session_id)
+    # The public SessionDB contract returns Optional[str]. Restrict the gate
+    # to that shape so unspecced test doubles and legacy adapters cannot make
+    # a session look blocked merely by returning a truthy sentinel object.
+    if isinstance(reason, str) and reason:
         from agent.context_engine import ContextSessionBlockedError
         raise ContextSessionBlockedError(
             f"context session is blocked pending explicit recovery: {reason}"

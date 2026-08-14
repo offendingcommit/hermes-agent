@@ -481,12 +481,10 @@ class ContextEngine(ABC):
                                prompt_tokens: int, emergency: bool = False) -> bool:
         """Message-aware host gate before policy-driven compaction.
 
-        A transcript containing only the protected head and tail has no safe
-        reclaimable span. Emergency pressure can request an attempt, but never
-        changes which messages are protected.
+        The base contract stays permissive for existing engines. Engines with
+        reclaimability rules override this method.
         """
-        non_system = sum(1 for message in messages if message.get("role") != "system")
-        return non_system > self.protect_first_n + self.protect_last_n
+        return True
 
     # -- Optional: manual /compress preflight ------------------------------
 
