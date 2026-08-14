@@ -41,6 +41,20 @@ from agent.model_metadata import (
 logger = logging.getLogger(__name__)
 
 
+def ensure_context_session_executable(agent) -> None:
+    """Fail before an API request when the durable session block is set."""
+    db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if db is None or not session_id:
+        return
+    reason = db.get_context_session_block(session_id)
+    if reason:
+        from agent.context_engine import ContextSessionBlockedError
+        raise ContextSessionBlockedError(
+            f"context session is blocked pending explicit recovery: {reason}"
+        )
+
+
 def compose_user_api_content(
     content: Any,
     ext_prefetch_cache: str,
@@ -560,6 +574,8 @@ def build_turn_context(
         if not isinstance(pending_cli_message, dict) or pending_cli_message.get("_db_persisted"):
             agent._pending_cli_user_message = None
 
+    ensure_context_session_executable(agent)
+
     # ── Preflight context compression ──
     # Gate the (expensive) full token estimate behind a cheap pre-check.
     # See ``_should_run_preflight_estimate`` for the OR semantics that fix
@@ -631,7 +647,13 @@ def build_turn_context(
                 "(mode=%s); Hermes will not start thread compaction here.",
                 getattr(agent, "codex_app_server_auto_compaction", "native"),
             )
-        elif _compressor.should_compress(_preflight_tokens):
+        elif (
+            _compressor.should_compress(_preflight_tokens)
+            and getattr(
+                _compressor, "is_compaction_eligible",
+                lambda _messages, **_kwargs: True,
+            )(messages, prompt_tokens=_preflight_tokens, emergency=False)
+        ):
             _preflight_compressed = True
             logger.info(
                 "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",

@@ -1058,6 +1058,23 @@ def compress_context(
 
         messages_before_compression = copy.deepcopy(messages)
         compressed = compress_fn(messages, **compress_kwargs)
+        from agent.context_engine import CompactionOutcome
+        _typed_outcome = compressed if isinstance(compressed, CompactionOutcome) else None
+        if _typed_outcome is not None:
+            if _typed_outcome.status == "blocked":
+                if getattr(agent, "_session_db", None) is not None and agent.session_id:
+                    agent._session_db.block_context_session(
+                        agent.session_id, _typed_outcome.blocked_reason or "context_engine_blocked"
+                    )
+                compressed = messages_before_compression
+            elif _typed_outcome.status == "compacted":
+                if not _typed_outcome.transaction_id:
+                    raise ValueError("typed compaction outcome requires transaction_id")
+                compressed = _typed_outcome.messages
+            elif _typed_outcome.status == "noop":
+                compressed = messages_before_compression
+            else:
+                raise ValueError(f"unknown compaction outcome status: {_typed_outcome.status}")
     except BaseException:
         # ANY exception after lock acquisition — memory hook, capability
         # inspection, engine lookup, or compress() — must release the lock so
@@ -1220,7 +1237,24 @@ def compress_context(
                     # for search/recovery (Teknium review — keep one durable id
                     # WITHOUT destroying history, unlike a hard replace_messages).
                     # See #38763.
-                    agent._session_db.archive_and_compact(agent.session_id, compressed)
+                    import hashlib
+                    import json
+                    _transaction_id = (
+                        _typed_outcome.transaction_id if _typed_outcome is not None else None
+                    )
+                    _summary_hash = hashlib.sha256(
+                        json.dumps(compressed, sort_keys=True, default=str).encode("utf-8")
+                    ).hexdigest()
+                    agent._session_db.archive_and_compact(
+                        agent.session_id,
+                        compressed,
+                        transaction_id=_transaction_id,
+                        active_summary_hash=_summary_hash if _transaction_id else None,
+                    )
+                    if _transaction_id:
+                        _ack = getattr(agent.context_compressor, "on_compaction_committed", None)
+                        if callable(_ack):
+                            _ack(_transaction_id)
                     # Reset the flush identity set so the next turn's appends are
                     # diffed against the COMPACTED transcript: the compacted dicts
                     # are passed as conversation_history next turn and skipped by

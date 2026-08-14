@@ -1896,14 +1896,23 @@ def init_agent(
             provider=agent.provider,
             custom_providers=_custom_providers,
         )
-        agent.context_compressor.update_model(
+        import inspect as _inspect
+        _model_kwargs = dict(
             model=agent.model,
             context_length=_plugin_ctx_len,
             base_url=agent.base_url,
             api_key=getattr(agent, "api_key", ""),
             provider=agent.provider,
             api_mode=agent.api_mode,
+            output_token_budget=agent.max_tokens,
         )
+        _model_params = _inspect.signature(agent.context_compressor.update_model).parameters
+        agent.context_compressor.update_model(**{
+            key: value for key, value in _model_kwargs.items()
+            if key in _model_params or any(
+                p.kind == _inspect.Parameter.VAR_KEYWORD for p in _model_params.values()
+            )
+        })
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:
@@ -1926,7 +1935,15 @@ def init_agent(
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
         try:
-            _bind_session_state(session_db=session_db, session_id=agent.session_id)
+            import inspect as _inspect
+            _bind_kwargs = {"session_db": session_db, "session_id": agent.session_id}
+            _bind_params = _inspect.signature(_bind_session_state).parameters
+            _bind_session_state(**{
+                key: value for key, value in _bind_kwargs.items()
+                if key in _bind_params or any(
+                    p.kind == _inspect.Parameter.VAR_KEYWORD for p in _bind_params.values()
+                )
+            })
         except Exception:
             pass
     agent.compression_enabled = compression_enabled
