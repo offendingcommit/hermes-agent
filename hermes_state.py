@@ -8676,6 +8676,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_id: str,
         compacted_messages: List[Dict[str, Any]],
         model_config_patch: Optional[Dict[str, Any]] = None,
+        *,
+        transaction_id: Optional[str] = None,
+        active_summary_hash: Optional[str] = None,
     ) -> int:
         """Non-destructive in-place compaction for a single durable session id.
 
@@ -8704,6 +8707,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
 
         def _do(conn):
+            archived_ids = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT id FROM messages WHERE session_id = ? "
+                    "AND active = 1 ORDER BY id",
+                    (session_id,),
+                ).fetchall()
+            ]
             patched_model_config = None
             if model_config_patch is not None:
                 # on_missing="raise": a prune/compaction must not commit
@@ -8728,6 +8739,29 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             inserted, tool_calls_total = self._insert_message_rows(
                 conn, session_id, compacted_messages
             )
+            active_ids = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT id FROM messages WHERE session_id = ? "
+                    "AND active = 1 ORDER BY id",
+                    (session_id,),
+                ).fetchall()
+            ]
+            if transaction_id:
+                conn.execute(
+                    "INSERT INTO context_compaction_receipts "
+                    "(session_id, transaction_id, archived_message_ids, "
+                    "active_message_ids, active_summary_hash, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        session_id,
+                        transaction_id,
+                        json.dumps(archived_ids),
+                        json.dumps(active_ids),
+                        active_summary_hash,
+                        time.time(),
+                    ),
+                )
             # message_count / tool_call_count reflect the LIVE (active) set —
             # the archived rows are still on disk but not part of the live count.
             if model_config_patch is None:
@@ -8742,6 +8776,117 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     (inserted, tool_calls_total, patched_model_config, session_id),
                 )
             return inserted
+
+        return self._execute_write(_do)
+
+    def get_compaction_receipt(
+        self, session_id: str, transaction_id: str
+    ) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM context_compaction_receipts "
+                "WHERE session_id = ? AND transaction_id = ?",
+                (session_id, transaction_id),
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["archived_message_ids"] = json.loads(result["archived_message_ids"])
+        result["active_message_ids"] = json.loads(result["active_message_ids"])
+        return result
+
+    def search_session_messages(
+        self, session_id: str, query: str, *, limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Return bounded canonical matches through SessionContextStore."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, role, content, timestamp, active, compacted "
+                "FROM messages WHERE session_id = ? AND content LIKE ? "
+                "ORDER BY id DESC LIMIT ?",
+                (session_id, f"%{query}%", max(1, min(int(limit), 100))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_session_messages_around(
+        self,
+        session_id: str,
+        message_id: int,
+        *,
+        before: int = 2,
+        after: int = 2,
+    ) -> List[Dict[str, Any]]:
+        with self._lock:
+            target = self._conn.execute(
+                "SELECT id FROM messages WHERE session_id = ? AND id = ?",
+                (session_id, message_id),
+            ).fetchone()
+            if target is None:
+                return []
+            earlier = self._conn.execute(
+                "SELECT id, role, content, timestamp, active, compacted "
+                "FROM messages WHERE session_id = ? AND id < ? "
+                "ORDER BY id DESC LIMIT ?",
+                (session_id, message_id, before),
+            ).fetchall()
+            later = self._conn.execute(
+                "SELECT id, role, content, timestamp, active, compacted "
+                "FROM messages WHERE session_id = ? AND id >= ? "
+                "ORDER BY id LIMIT ?",
+                (session_id, message_id, after + 1),
+            ).fetchall()
+        return [dict(row) for row in reversed(earlier)] + [dict(row) for row in later]
+
+    def block_context_session(self, session_id: str, reason: str) -> None:
+        bounded = str(reason or "unknown")[:128]
+        self._execute_write(
+            lambda conn: conn.execute(
+                "INSERT INTO context_session_state"
+                "(session_id, blocked_reason, blocked_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(session_id) DO UPDATE SET "
+                "blocked_reason=excluded.blocked_reason, "
+                "blocked_at=excluded.blocked_at",
+                (session_id, bounded, time.time()),
+            )
+        )
+
+    def get_context_session_block(self, session_id: str) -> Optional[str]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT blocked_reason FROM context_session_state "
+                "WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        return row[0] if row else None
+
+    def clear_context_session_block(self, session_id: str) -> None:
+        self._execute_write(
+            lambda conn: conn.execute(
+                "DELETE FROM context_session_state WHERE session_id = ?",
+                (session_id,),
+            )
+        )
+
+    def get_session_deletion_tombstones(
+        self, *, limit: int = 25
+    ) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, session_id_hash, deleted_at "
+                "FROM session_deletion_tombstones WHERE acknowledged_at IS NULL "
+                "ORDER BY id LIMIT ?",
+                (max(1, min(limit, 100)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def acknowledge_session_deletion_tombstone(self, tombstone_id: int) -> bool:
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE session_deletion_tombstones SET acknowledged_at = ? "
+                "WHERE id = ? AND acknowledged_at IS NULL",
+                (time.time(), tombstone_id),
+            )
+            return bool(cursor.rowcount)
 
         return self._execute_write(_do)
 
@@ -9955,6 +10100,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 }
                 if actual_ids != expected_ids:
                     return False
+            conn.execute(
+                "INSERT INTO session_deletion_tombstones"
+                "(session_id_hash, deleted_at) VALUES (?, ?)",
+                (hashlib.sha256(session_id.encode("utf-8")).hexdigest(), time.time()),
+            )
             removed_delegate_ids.extend(_delete_delegate_children(conn, [session_id]))
             # Orphan remaining child sessions (branches, etc.) so FK is satisfied.
             conn.execute(

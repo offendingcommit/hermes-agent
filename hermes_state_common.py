@@ -341,6 +341,29 @@ CREATE TABLE IF NOT EXISTS messages (
     display_metadata TEXT
 );
 
+CREATE TABLE IF NOT EXISTS context_compaction_receipts (
+    session_id TEXT NOT NULL,
+    transaction_id TEXT NOT NULL,
+    archived_message_ids TEXT NOT NULL,
+    active_message_ids TEXT NOT NULL,
+    active_summary_hash TEXT,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (session_id, transaction_id)
+);
+
+CREATE TABLE IF NOT EXISTS context_session_state (
+    session_id TEXT PRIMARY KEY,
+    blocked_reason TEXT,
+    blocked_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS session_deletion_tombstones (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id_hash TEXT NOT NULL,
+    deleted_at REAL NOT NULL,
+    acknowledged_at REAL
+);
+
 CREATE TABLE IF NOT EXISTS session_model_usage (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     model TEXT NOT NULL,

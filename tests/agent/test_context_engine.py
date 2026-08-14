@@ -178,12 +178,36 @@ class TestPluginContextEngineSlot:
         ctx = PluginContext(manifest, mgr)
 
         engine = StubEngine()
-        ctx.register_context_engine(engine)
+        accepted = ctx.register_context_engine(engine)
 
         assert mgr._context_engine is engine
         assert mgr._context_engine.name == "stub"
+        assert accepted is True
 
 
+    def test_reject_second_engine(self):
+        from hermes_cli.plugins import PluginManager, PluginContext, PluginManifest
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-lcm")
+        ctx = PluginContext(manifest, mgr)
+
+        engine1 = StubEngine()
+        engine2 = StubEngine()
+        ctx.register_context_engine(engine1)
+        with pytest.raises(RuntimeError, match="already registered"):
+            ctx.register_context_engine(engine2)
+
+        assert mgr._context_engine is engine1
+
+    def test_reject_non_engine(self):
+        from hermes_cli.plugins import PluginManager, PluginContext, PluginManifest
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-bad")
+        ctx = PluginContext(manifest, mgr)
+
+        with pytest.raises(TypeError, match="must inherit"):
+            ctx.register_context_engine("not an engine")
+        assert mgr._context_engine is None
 
     def test_get_plugin_context_engine(self):
         from hermes_cli.plugins import PluginManager, get_plugin_context_engine

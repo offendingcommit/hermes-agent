@@ -2104,7 +2104,7 @@ class PluginContext:
     # -- context engine registration -----------------------------------------
 
     @_serialized_replacement
-    def register_context_engine(self, engine) -> Optional[PluginRegistration]:
+    def register_context_engine(self, engine) -> bool:
         """Register a context engine to replace the built-in ContextCompressor.
 
         Only one context engine plugin is allowed. If a second plugin tries
@@ -2118,7 +2118,7 @@ class PluginContext:
                 "already registered. Only one context engine plugin is allowed.",
                 self.manifest.name,
             )
-            return
+            raise RuntimeError("a context engine is already registered")
         # Defer the import to avoid circular deps at module level
         from agent.context_engine import ContextEngine
         if not isinstance(engine, ContextEngine):
@@ -2127,10 +2127,10 @@ class PluginContext:
                 "inherit from ContextEngine. Ignoring.",
                 self.manifest.name,
             )
-            return
+            raise TypeError("context engine must inherit from ContextEngine")
         previous = self._manager._context_engine
         self._manager._context_engine = engine
-        handle = self._track_replacement(
+        self._track_replacement(
             "context_engine",
             engine.name,
             slot=("manager_value", id(self._manager), "_context_engine"),
@@ -2144,7 +2144,7 @@ class PluginContext:
             "Plugin '%s' registered context engine: %s",
             self.manifest.name, engine.name,
         )
-        return handle
+        return True
 
     # -- context reference registration -------------------------------------
 

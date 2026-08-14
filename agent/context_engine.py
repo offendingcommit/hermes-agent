@@ -26,7 +26,10 @@ Lifecycle:
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+import secrets
+import threading
+from typing import Any, Dict, List, Optional, Sequence
 
 from agent.redact import redact_sensitive_text
 
@@ -35,6 +38,105 @@ MEMORY_CONTEXT_MAX_CHARS = 6_000
 _MEMORY_CONTEXT_HEAD_CHARS = 4_000
 _MEMORY_CONTEXT_TAIL_CHARS = 1_500
 _MEMORY_CONTEXT_TRUNCATION_MARKER = "\n...[memory provider context truncated]...\n"
+
+
+class StaleSessionBindingError(RuntimeError):
+    """Raised when an engine uses a revoked session capability."""
+
+
+class ContextSessionBlockedError(RuntimeError):
+    """Raised before model execution while a session is durably blocked."""
+
+
+@dataclass(frozen=True)
+class CompactionOutcome:
+    """Typed result accepted from context engines; plain message lists remain valid."""
+
+    status: str
+    messages: Optional[List[Dict[str, Any]]] = None
+    transaction_id: Optional[str] = None
+    blocked_reason: Optional[str] = None
+
+    @classmethod
+    def compacted(cls, messages, transaction_id: str):
+        return cls("compacted", list(messages), transaction_id=transaction_id)
+
+    @classmethod
+    def noop(cls):
+        return cls("noop")
+
+    @classmethod
+    def blocked(cls, reason: str):
+        return cls("blocked", blocked_reason=reason)
+
+
+class SessionContextStore:
+    """Bounded, current-session-only view of canonical Hermes history.
+
+    The session id and an unguessable incarnation are captured by the host and
+    are deliberately absent from every public read method.
+    """
+
+    def __init__(self, session_db, session_id: str, *, max_query_chars=512,
+                 max_results=25, max_span=50):
+        self._db = session_db
+        self._session_id = session_id
+        self._incarnation = secrets.token_urlsafe(32)
+        self._max_query_chars = max(1, int(max_query_chars))
+        self._max_results = max(1, int(max_results))
+        self._max_span = max(1, int(max_span))
+        self._active = True
+        self._lock = threading.RLock()
+
+    @property
+    def incarnation(self) -> str:
+        return self._incarnation
+
+    def revoke(self) -> None:
+        with self._lock:
+            self._active = False
+
+    def __deepcopy__(self, memo):
+        raise TypeError("live session capabilities cannot be copied")
+
+    def _check(self) -> None:
+        with self._lock:
+            if not self._active:
+                raise StaleSessionBindingError("context-engine session binding is stale")
+
+    def search(self, query: str, *, limit: int = 10) -> List[Dict[str, Any]]:
+        self._check()
+        query = str(query or "")
+        if len(query) > self._max_query_chars:
+            raise ValueError("query exceeds bound")
+        limit = max(1, min(int(limit), self._max_results))
+        return self._db.search_session_messages(self._session_id, query, limit=limit)
+
+    def around_message(self, message_id: int, *, before: int = 2,
+                       after: int = 2) -> List[Dict[str, Any]]:
+        self._check()
+        before, after = max(0, int(before)), max(0, int(after))
+        if before + after + 1 > self._max_span:
+            raise ValueError("span exceeds bound")
+        return self._db.get_session_messages_around(
+            self._session_id, int(message_id), before=before, after=after
+        )
+
+    def receipt(self, transaction_id: str) -> Optional[Dict[str, Any]]:
+        self._check()
+        return self._db.get_compaction_receipt(self._session_id, transaction_id)
+
+    def deletion_tombstones(self, *, limit: int = 25) -> List[Dict[str, Any]]:
+        self._check()
+        return self._db.get_session_deletion_tombstones(limit=min(int(limit), self._max_results))
+
+    def acknowledge_deletion(self, tombstone_id: int) -> bool:
+        self._check()
+        return self._db.acknowledge_session_deletion_tombstone(int(tombstone_id))
+
+    def clear_blocked_state(self) -> None:
+        self._check()
+        self._db.clear_context_session_block(self._session_id)
 
 
 def sanitize_memory_context(memory_context: str) -> str:
@@ -106,6 +208,7 @@ class ContextEngine(ABC):
     threshold_tokens: int = 0
     context_length: int = 0
     compression_count: int = 0
+    _session_store: Optional[SessionContextStore] = None
 
     # -- Compaction parameters (read by run_agent.py for preflight) --------
     #
@@ -367,6 +470,17 @@ class ContextEngine(ABC):
             return None
         return default_message
 
+    def is_compaction_eligible(self, messages: Sequence[Dict[str, Any]], *,
+                               prompt_tokens: int, emergency: bool = False) -> bool:
+        """Message-aware host gate before policy-driven compaction.
+
+        A transcript containing only the protected head and tail has no safe
+        reclaimable span. Emergency pressure can request an attempt, but never
+        changes which messages are protected.
+        """
+        non_system = sum(1 for message in messages if message.get("role") != "system")
+        return non_system > self.protect_first_n + self.protect_last_n
+
     # -- Optional: manual /compress preflight ------------------------------
 
     def has_content_to_compress(self, messages: List[Dict[str, Any]]) -> bool:
@@ -407,6 +521,19 @@ class ContextEngine(ABC):
         self.last_completion_tokens = 0
         self.last_total_tokens = 0
         self.compression_count = 0
+        self.revoke_session_state()
+
+    def bind_session_state(self, *, session_db, session_id: str, **limits) -> SessionContextStore:
+        """Bind and return a fresh trusted capability, revoking its predecessor."""
+        self.revoke_session_state()
+        self._session_store = SessionContextStore(session_db, session_id, **limits)
+        return self._session_store
+
+    def revoke_session_state(self) -> None:
+        store = getattr(self, "_session_store", None)
+        if store is not None:
+            store.revoke()
+        self._session_store = None
 
     # -- Optional: tools ---------------------------------------------------
 
@@ -463,6 +590,7 @@ class ContextEngine(ABC):
         api_key: str = "",
         provider: str = "",
         api_mode: str = "",
+        output_token_budget: Optional[int] = None,
     ) -> None:
         """Called when the user switches models or on fallback activation.
 
@@ -487,3 +615,5 @@ class ContextEngine(ABC):
         )
         self.threshold_percent = self._base_threshold_percent
         self.threshold_tokens = int(context_length * self.threshold_percent)
+        if output_token_budget is not None:
+            self.output_token_budget = int(output_token_budget)
