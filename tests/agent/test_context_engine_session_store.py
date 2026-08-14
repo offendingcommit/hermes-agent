@@ -61,3 +61,29 @@ def test_deletion_tombstone_is_durable_and_acknowledged(tmp_path):
     assert "two" not in tombstones[0]["session_id_hash"]
     assert store.acknowledge_deletion(tombstones[0]["id"]) is True
     assert store.deletion_tombstones() == []
+
+
+def test_receipt_enumeration_rebuilds_lost_derived_index(tmp_path):
+    db = _db(tmp_path)
+    db.archive_and_compact(
+        "one", [{"role": "assistant", "content": "first summary"}],
+        transaction_id="tx-1", active_summary_hash="hash-1",
+    )
+    db.archive_and_compact(
+        "one", [{"role": "assistant", "content": "second summary"}],
+        transaction_id="tx-2", active_summary_hash="hash-2",
+    )
+    db.archive_and_compact(
+        "two", [{"role": "assistant", "content": "other summary"}],
+        transaction_id="other", active_summary_hash="other-hash",
+    )
+    store = Engine().bind_session_state(
+        session_db=db, session_id="one", max_results=1
+    )
+
+    # A plugin with no derived index can discover the newest durable lineage
+    # receipt without knowing its transaction id, but cannot escape host bounds.
+    receipts = store.receipts(limit=99)
+    assert [receipt["transaction_id"] for receipt in receipts] == ["tx-2"]
+    assert receipts[0]["archived_message_ids"]
+    assert receipts[0]["active_message_ids"]

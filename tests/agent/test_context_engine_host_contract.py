@@ -28,7 +28,10 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from agent.context_compressor import ContextCompressor
+from agent.agent_init import _bind_context_engine_session
 from hermes_state import SessionDB
 from run_agent import AIAgent
 
@@ -40,6 +43,17 @@ def _bare_agent() -> AIAgent:
     agent.platform = "telegram"
     agent._gateway_session_key = "agent:main:telegram:dm:42"
     return agent
+
+
+def test_bind_failure_is_an_explicit_activation_error():
+    engine = MagicMock()
+    engine.name = "broken"
+    engine.bind_session_state.side_effect = OSError("derived DB unavailable")
+
+    with pytest.raises(RuntimeError, match="broken.*failed to bind") as error:
+        _bind_context_engine_session(engine, MagicMock(), "session")
+
+    assert isinstance(error.value.__cause__, OSError)
 
 
 def test_transition_runs_full_lifecycle_in_order():
