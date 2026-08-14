@@ -12,6 +12,7 @@ from agent.context_compressor import ContextCompressor
 # A minimal concrete engine for testing the ABC
 # ---------------------------------------------------------------------------
 
+
 class StubEngine(ContextEngine):
     """Minimal engine that satisfies the ABC without doing real work."""
 
@@ -25,8 +26,16 @@ class StubEngine(ContextEngine):
     def name(self) -> str:
         return "stub"
 
-    def update_model(self, model="", context_length=0, base_url="", api_key="",
-                     provider="", api_mode="", **kwargs) -> None:
+    def update_model(
+        self,
+        model="",
+        context_length=0,
+        base_url="",
+        api_key="",
+        provider="",
+        api_mode="",
+        **kwargs,
+    ) -> None:
         """Mirror ContextCompressor.update_model — recompute threshold from the
         new context_length. This is the mutation that corrupted the shared
         singleton in #42449."""
@@ -42,7 +51,9 @@ class StubEngine(ContextEngine):
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         return tokens >= self.threshold_tokens
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None) -> List[Dict[str, Any]]:
+    def compress(
+        self, messages: List[Dict[str, Any]], current_tokens: int = None
+    ) -> List[Dict[str, Any]]:
         self._compress_called = True
         self.compression_count += 1
         # Trivial: just return as-is
@@ -66,16 +77,18 @@ class StubEngine(ContextEngine):
 # ABC contract tests
 # ---------------------------------------------------------------------------
 
+
 class TestContextEngineABC:
     """Verify the ABC enforces the required interface."""
 
-
     def test_missing_methods_raises(self):
         """A subclass missing required methods cannot be instantiated."""
+
         class Incomplete(ContextEngine):
             @property
             def name(self):
                 return "incomplete"
+
         with pytest.raises(TypeError):
             Incomplete()
 
@@ -85,15 +98,13 @@ class TestContextEngineABC:
         assert engine.name == "stub"
 
 
-
 # ---------------------------------------------------------------------------
 # Default method behavior
 # ---------------------------------------------------------------------------
 
+
 class TestDefaults:
     """Verify ABC default implementations work correctly."""
-
-
 
     def test_default_get_status(self):
         engine = StubEngine()
@@ -104,7 +115,6 @@ class TestDefaults:
         assert status["threshold_tokens"] == 100000
         assert 0 < status["usage_percent"] <= 100
 
-
     def test_on_session_reset(self):
         engine = StubEngine()
         engine.last_prompt_tokens = 999
@@ -114,15 +124,12 @@ class TestDefaults:
         assert engine.compression_count == 0
 
 
-
 # ---------------------------------------------------------------------------
 # StubEngine behavior
 # ---------------------------------------------------------------------------
 
+
 class TestStubEngine:
-
-
-
     def test_tool_schemas(self):
         engine = StubEngine()
         schemas = engine.get_tool_schemas()
@@ -136,17 +143,18 @@ class TestStubEngine:
         assert "stub_search" in engine._tools_called
 
 
-
-
 # ---------------------------------------------------------------------------
 # ContextCompressor session reset via ABC
 # ---------------------------------------------------------------------------
+
 
 class TestCompressorSessionReset:
     """Verify ContextCompressor.on_session_reset() clears all state."""
 
     def test_reset_clears_state(self):
-        c = ContextCompressor(model="test", quiet_mode=True, config_context_length=200000)
+        c = ContextCompressor(
+            model="test", quiet_mode=True, config_context_length=200000
+        )
         c.last_prompt_tokens = 50000
         c.compression_count = 3
         c._previous_summary = "some old summary"
@@ -168,11 +176,13 @@ class TestCompressorSessionReset:
 # Plugin slot (PluginManager integration)
 # ---------------------------------------------------------------------------
 
+
 class TestPluginContextEngineSlot:
     """Test register_context_engine on PluginContext."""
 
     def test_register_engine(self):
         from hermes_cli.plugins import PluginManager, PluginContext, PluginManifest
+
         mgr = PluginManager()
         manifest = PluginManifest(name="test-lcm")
         ctx = PluginContext(manifest, mgr)
@@ -184,9 +194,9 @@ class TestPluginContextEngineSlot:
         assert mgr._context_engine.name == "stub"
         assert accepted is True
 
-
     def test_reject_second_engine(self):
         from hermes_cli.plugins import PluginManager, PluginContext, PluginManifest
+
         mgr = PluginManager()
         manifest = PluginManifest(name="test-lcm")
         ctx = PluginContext(manifest, mgr)
@@ -201,6 +211,7 @@ class TestPluginContextEngineSlot:
 
     def test_reject_non_engine(self):
         from hermes_cli.plugins import PluginManager, PluginContext, PluginManifest
+
         mgr = PluginManager()
         manifest = PluginManifest(name="test-bad")
         ctx = PluginContext(manifest, mgr)
@@ -228,15 +239,14 @@ class TestPluginContextEngineSlot:
             plugins_mod._plugin_manager = old_mgr
 
 
-
 class TestPluginContextEngineDeepCopy:
     """Verify that the plugin context engine singleton is deep-copied before
     mutation in agent_init — regression test for #42449."""
 
-
     def test_deepcopy_preserves_engine_name(self):
         """Deep-copied engine retains its identity (name property)."""
         import copy
+
         engine = StubEngine(context_length=500000)
         clone = copy.deepcopy(engine)
         assert clone.name == engine.name == "stub"
@@ -244,6 +254,7 @@ class TestPluginContextEngineDeepCopy:
     def test_deepcopy_preserves_compressor_state(self):
         """Deep-copied engine starts with the same token counters."""
         import copy
+
         engine = StubEngine(context_length=500000)
         engine.last_prompt_tokens = 1000
         engine.last_total_tokens = 1500
@@ -254,7 +265,6 @@ class TestPluginContextEngineDeepCopy:
         assert clone.last_total_tokens == 1500
         assert clone.compression_count == 3
         assert clone is not engine
-
 
 
 class TestInitAgentDoesNotMutatePluginSingleton:
@@ -293,7 +303,9 @@ class TestInitAgentDoesNotMutatePluginSingleton:
             assert _candidate is singleton
             _selected_engine = copy.deepcopy(_candidate)
             _selected_engine.update_model(
-                model="MiniMax-M2", context_length=204800, provider="minimax",
+                model="MiniMax-M2",
+                context_length=204800,
+                provider="minimax",
             )
 
             # The child's smaller context must NOT leak back into the parent
@@ -325,6 +337,7 @@ class TestInitAgentDoesNotMutatePluginSingleton:
         engine = _UncopyableEngine()
         # Sanity: the engine genuinely defeats deepcopy.
         import copy
+
         with pytest.raises(Exception):
             copy.deepcopy(engine)
 
@@ -366,6 +379,6 @@ class TestInitAgentDoesNotMutatePluginSingleton:
             "update_model corrupts the parent's shared singleton)."
         )
         # And the bug-shape alias must NOT be present on that path.
-        assert not re.search(
-            r"_selected_engine\s*=\s*_candidate\b", src
-        ), "found the #42449 bug-shape alias `_selected_engine = _candidate`"
+        assert not re.search(r"_selected_engine\s*=\s*_candidate\b", src), (
+            "found the #42449 bug-shape alias `_selected_engine = _candidate`"
+        )

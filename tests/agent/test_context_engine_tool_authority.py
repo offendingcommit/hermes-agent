@@ -4,9 +4,15 @@ from hermes_state import SessionDB
 
 class Engine(ContextEngine):
     name = "test"
-    def update_from_response(self, usage): pass
-    def should_compress(self, prompt_tokens=None): return False
-    def compress(self, messages, **kwargs): return messages
+
+    def update_from_response(self, usage):
+        pass
+
+    def should_compress(self, prompt_tokens=None):
+        return False
+
+    def compress(self, messages, **kwargs):
+        return messages
 
 
 def test_tool_arguments_have_no_session_authority(tmp_path):

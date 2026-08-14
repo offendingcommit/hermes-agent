@@ -79,9 +79,15 @@ def test_durable_string_reason_blocks_execution():
 def test_base_compaction_eligibility_is_backward_compatible():
     class ProbeEngine(ContextEngine):
         name = "probe"
-        def update_from_response(self, usage): pass
-        def should_compress(self, prompt_tokens=None): return False
-        def compress(self, messages, **kwargs): return messages
+
+        def update_from_response(self, usage):
+            pass
+
+        def should_compress(self, prompt_tokens=None):
+            return False
+
+        def compress(self, messages, **kwargs):
+            return messages
 
     assert ProbeEngine().is_compaction_eligible([], prompt_tokens=1)
 
@@ -92,9 +98,15 @@ def test_transition_runs_full_lifecycle_in_order():
     engine = MagicMock()
     engine.context_length = 200_000
     engine.on_session_end.side_effect = lambda *a, **kw: events.append("on_session_end")
-    engine.on_session_reset.side_effect = lambda *a, **kw: events.append("on_session_reset")
-    engine.on_session_start.side_effect = lambda *a, **kw: events.append("on_session_start")
-    engine.carry_over_new_session_context.side_effect = lambda *a, **kw: events.append("carry_over")
+    engine.on_session_reset.side_effect = lambda *a, **kw: events.append(
+        "on_session_reset"
+    )
+    engine.on_session_start.side_effect = lambda *a, **kw: events.append(
+        "on_session_start"
+    )
+    engine.carry_over_new_session_context.side_effect = lambda *a, **kw: events.append(
+        "carry_over"
+    )
 
     agent = _bare_agent()
     agent.context_compressor = engine
@@ -114,10 +126,9 @@ def test_transition_runs_full_lifecycle_in_order():
     ]
 
 
-
-
 def test_transition_skips_optional_hooks_when_engine_lacks_them():
     """Engines that don't implement on_session_end/carry_over still work."""
+
     class MinimalEngine:
         def __init__(self):
             self.context_length = 100_000
@@ -149,11 +160,9 @@ def test_transition_skips_optional_hooks_when_engine_lacks_them():
     assert kw.get("old_session_id") == "old"
 
 
-
-
-
-
-def test_reset_session_state_rebinds_builtin_compressor_after_session_switch(tmp_path, monkeypatch):
+def test_reset_session_state_rebinds_builtin_compressor_after_session_switch(
+    tmp_path, monkeypatch
+):
     """Reset-only session switches must rebind durable cooldown state to the new session."""
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("old-sid", source="cli")
@@ -230,10 +239,6 @@ def test_update_from_response_forwards_canonical_cache_buckets():
     assert usage_dict["output_tokens"] == 500
 
 
-
-
-
-
 def test_engine_collector_forwards_register_command_to_plugin_manager():
     """A plugin context engine can register a slash command via ``ctx.register_command``."""
     from plugins.context_engine import _EngineCollector
@@ -259,4 +264,3 @@ def test_engine_collector_forwards_register_command_to_plugin_manager():
     finally:
         # Clean up so we don't leak the registration across tests.
         manager._plugin_commands.pop("my-lcm-test-cmd", None)
-

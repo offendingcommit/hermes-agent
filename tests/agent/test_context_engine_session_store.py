@@ -8,9 +8,15 @@ from hermes_state import SessionDB
 
 class Engine(ContextEngine):
     name = "test"
-    def update_from_response(self, usage): pass
-    def should_compress(self, prompt_tokens=None): return False
-    def compress(self, messages, **kwargs): return messages
+
+    def update_from_response(self, usage):
+        pass
+
+    def should_compress(self, prompt_tokens=None):
+        return False
+
+    def compress(self, messages, **kwargs):
+        return messages
 
 
 def _db(tmp_path):
@@ -28,9 +34,9 @@ def test_bound_reads_cannot_select_another_session_and_include_archived(tmp_path
     store = Engine().bind_session_state(session_db=db, session_id="one")
     assert [row["content"] for row in store.search("private")] == ["private one"]
     message_id = store.search("private")[0]["id"]
-    assert [row["content"] for row in store.around_message(message_id, before=0, after=1)] == [
-        "private one", "answer one"
-    ]
+    assert [
+        row["content"] for row in store.around_message(message_id, before=0, after=1)
+    ] == ["private one", "answer one"]
     db.archive_and_compact("one", [{"role": "user", "content": "summary"}])
     assert store.search("private")[0]["active"] == 0
 
@@ -66,20 +72,24 @@ def test_deletion_tombstone_is_durable_and_acknowledged(tmp_path):
 def test_receipt_enumeration_rebuilds_lost_derived_index(tmp_path):
     db = _db(tmp_path)
     db.archive_and_compact(
-        "one", [{"role": "assistant", "content": "first summary"}],
-        transaction_id="tx-1", active_summary_hash="hash-1",
+        "one",
+        [{"role": "assistant", "content": "first summary"}],
+        transaction_id="tx-1",
+        active_summary_hash="hash-1",
     )
     db.archive_and_compact(
-        "one", [{"role": "assistant", "content": "second summary"}],
-        transaction_id="tx-2", active_summary_hash="hash-2",
+        "one",
+        [{"role": "assistant", "content": "second summary"}],
+        transaction_id="tx-2",
+        active_summary_hash="hash-2",
     )
     db.archive_and_compact(
-        "two", [{"role": "assistant", "content": "other summary"}],
-        transaction_id="other", active_summary_hash="other-hash",
+        "two",
+        [{"role": "assistant", "content": "other summary"}],
+        transaction_id="other",
+        active_summary_hash="other-hash",
     )
-    store = Engine().bind_session_state(
-        session_db=db, session_id="one", max_results=1
-    )
+    store = Engine().bind_session_state(session_db=db, session_id="one", max_results=1)
 
     # A plugin with no derived index can discover the newest durable lineage
     # receipt without knowing its transaction id, but cannot escape host bounds.
